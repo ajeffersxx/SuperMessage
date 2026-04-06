@@ -1,0 +1,33 @@
+# Delphi compiler output
+*.dcu
+*.dcp
+*.dcpil
+*.dpu
+*.exe
+*.dll
+*.bpl
+*.map
+*.local
+*.identcache
+*.tvsconfig
+*.vlb
+
+# Build output directories
+Win32/
+Win64/
+Android/
+iOS/
+OSX32/
+OSX64/
+iOSSimulator/
+Linux64/
+
+# IDE history and local settings
+__history/
+*.dproj.local
+*.deployproj
+*.cbproj.local
+
+# Backup files
+*~
+*.~*
