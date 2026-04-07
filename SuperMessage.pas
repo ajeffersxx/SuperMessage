@@ -91,6 +91,16 @@ type
     OnMore      : TProc;             // Called when More button is clicked
                                       // (dialog stays open unless OnMore closes it)
 
+    { Auto-dismiss — informational dialogs only }
+    AutoDismissSeconds : Integer;          // 0 = disabled; >0 = close after N seconds
+    DefaultButton      : TSuperMessageButton; // Result returned when auto-dismissed
+                                              // (ignored if not in Buttons set; falls back to smrNone)
+
+    { Logging — optional path to a UTF-8 text log file.
+      Each time the dialog is shown, a timestamped entry is appended (or the
+      file is created if it does not yet exist).  Empty string = no logging. }
+    LogFile     : string;
+
     { Appearance overrides }
     MaxWidth    : Single;             // 0 = use default (560)
     MinWidth    : Single;             // 0 = use default (320)
@@ -112,7 +122,8 @@ type
     { Simple modal shortcut }
     class function Show(const ATitle, AMessage: string;
                         AMsgType: TSuperMessageType;
-                        AButtons: TSuperMessageButtons = [smbOK])
+                        AButtons: TSuperMessageButtons = [smbOK];
+                        const ALogFile: string = '')
                         : TSuperMessageResult;
 
     { Full config — modal or non-modal depending on Config.Modal }
@@ -123,7 +134,8 @@ type
     class procedure ShowNonModal(const ATitle, AMessage: string;
                                  AMsgType: TSuperMessageType;
                                  AButtons: TSuperMessageButtons;
-                                 ACallback: TSuperMessageCallback = nil);
+                                 ACallback: TSuperMessageCallback = nil;
+                                 const ALogFile: string = '');
   end;
 
   { ------------------------------------------------------------------ }
@@ -141,6 +153,7 @@ type
 
     { Header }
     FHeaderLabel   : TLabel;
+    FCloseLabel    : TLabel;
     FHeaderLine    : TLine;
 
     { Body }
@@ -152,7 +165,25 @@ type
 
     { State }
     FResult        : TSuperMessageResult;
-    FConfig        : TSuperMessageConfig;    // reference only, not owned
+    FConfig        : TSuperMessageConfig;    // reference only; used during construction only
+    FOriginalTitle : string;
+
+    { Runtime-behaviour fields — copied from FConfig during construction so
+      the form is safe to use after the caller has freed TSuperMessageConfig
+      (the non-modal pattern frees it as soon as ShowConfig returns). }
+    FIsModal       : Boolean;
+    FCallback      : TSuperMessageCallback;
+    FButtonSet     : TSuperMessageButtons;
+    FDefaultButton : TSuperMessageButton;
+    FOnMore        : TProc;
+
+    { Auto-dismiss }
+    FDismissTimer      : TTimer;
+    FDismissSecondsLeft: Integer;
+    procedure StartDismissTimer;
+    procedure StopDismissTimer;
+    procedure DismissTimerTick(Sender: TObject);
+    procedure UpdateDismissCaption;
 
     { Build helpers }
     procedure BuildLayout;
@@ -162,6 +193,8 @@ type
 
     { Button click handler }
     procedure ButtonClick(Sender: TObject);
+    { Header × close button }
+    procedure CloseButtonClick(Sender: TObject);
     { OnClose handler for non-modal auto-free }
     procedure FormClose(Sender: TObject; var Action: TCloseAction);
 
@@ -170,6 +203,9 @@ type
     { Paints a simple vector icon onto a bitmap }
     class procedure DrawDefaultIcon(ABitmap: TBitmap;
                                     AMsgType: TSuperMessageType);
+    { Appends a timestamped entry to the log file (creates it if absent) }
+    class procedure WriteLog(const ALogFile, ATitle, AMessage: string;
+                             AMsgType: TSuperMessageType);
   public
     constructor CreateForConfig(AOwner: TComponent;
                                 AConfig: TSuperMessageConfig);
@@ -182,6 +218,7 @@ implementation
 
 uses
   System.Math,
+  System.IOUtils,
   FMX.Platform;
 
 { ========================================================================== }
@@ -191,17 +228,20 @@ uses
 constructor TSuperMessageConfig.Create;
 begin
   inherited Create;
-  MsgType     := smtInfo;
-  Buttons     := [smbOK];
-  Modal       := True;
-  MoreCaption := 'More...';
-  MaxWidth    := 0;   // use defaults
-  MinWidth    := 0;
-  Font        := nil;
-  StyleBook   := nil;
-  CustomBitmap := nil;
-  OnMore      := nil;
-  Callback    := nil;
+  MsgType            := smtInfo;
+  Buttons            := [smbOK];
+  Modal              := True;
+  MoreCaption        := 'More...';
+  MaxWidth           := 0;   // use defaults
+  MinWidth           := 0;
+  Font               := nil;
+  StyleBook          := nil;
+  CustomBitmap       := nil;
+  OnMore             := nil;
+  Callback           := nil;
+  AutoDismissSeconds := 0;
+  DefaultButton      := smbOK;
+  LogFile            := '';
 end;
 
 destructor TSuperMessageConfig.Destroy;
@@ -215,7 +255,8 @@ end;
 { ========================================================================== }
 
 class function TSuperMessage.Show(const ATitle, AMessage: string;
-  AMsgType: TSuperMessageType; AButtons: TSuperMessageButtons): TSuperMessageResult;
+  AMsgType: TSuperMessageType; AButtons: TSuperMessageButtons;
+  const ALogFile: string): TSuperMessageResult;
 var
   Cfg: TSuperMessageConfig;
 begin
@@ -226,6 +267,7 @@ begin
     Cfg.MsgType := AMsgType;
     Cfg.Buttons := AButtons;
     Cfg.Modal   := True;
+    Cfg.LogFile := ALogFile;
     Result := ShowConfig(Cfg);
   finally
     Cfg.Free;
@@ -263,7 +305,7 @@ end;
 
 class procedure TSuperMessage.ShowNonModal(const ATitle, AMessage: string;
   AMsgType: TSuperMessageType; AButtons: TSuperMessageButtons;
-  ACallback: TSuperMessageCallback);
+  ACallback: TSuperMessageCallback; const ALogFile: string);
 var
   Cfg: TSuperMessageConfig;
 begin
@@ -275,6 +317,7 @@ begin
     Cfg.Buttons  := AButtons;
     Cfg.Modal    := False;
     Cfg.Callback := ACallback;
+    Cfg.LogFile  := ALogFile;
     ShowConfig(Cfg);
   finally
     Cfg.Free;
@@ -326,12 +369,28 @@ constructor TSuperMessageForm.CreateForConfig(AOwner: TComponent;
 begin
   inherited CreateNew(AOwner);
 
-  FConfig  := AConfig;
-  FResult  := smrNone;
-  FButtons := TObjectList<TButton>.Create(False); // buttons owned by FButtonBar
+  FConfig        := AConfig;
+  FResult        := smrNone;
+  FOriginalTitle := AConfig.Title;
+  FDismissTimer  := nil;
+  FButtons       := TObjectList<TButton>.Create(False); // buttons owned by FButtonBar
 
-  { Basic form style }
-  BorderStyle    := TFmxFormBorderStyle.Single;
+  { Copy runtime-behaviour fields so this form works correctly even after
+    the caller frees their TSuperMessageConfig (non-modal pattern). }
+  FIsModal       := AConfig.Modal;
+  FCallback      := AConfig.Callback;
+  FButtonSet     := AConfig.Buttons;
+  FDefaultButton := AConfig.DefaultButton;
+  FOnMore        := AConfig.OnMore;
+
+  { Log this dialog event before anything else }
+  if AConfig.LogFile <> '' then
+    WriteLog(AConfig.LogFile, AConfig.Title, AConfig.Message, AConfig.MsgType);
+
+  { Borderless so Form.Height = content height exactly.
+    BorderStyle.Single includes the OS title bar in Form.Height, giving a
+    client area shorter than intended.  We supply our own header. }
+  BorderStyle    := TFmxFormBorderStyle.None;
   Caption        := AConfig.Title;
   Position       := TFormPosition.ScreenCenter;
   FormStyle      := TFormStyle.Normal;
@@ -350,12 +409,85 @@ begin
 
   { For non-modal, free the form automatically when closed }
   OnClose := FormClose;
+
+  { Start countdown if requested }
+  if AConfig.AutoDismissSeconds > 0 then
+    StartDismissTimer;
 end;
 
 destructor TSuperMessageForm.Destroy;
 begin
+  StopDismissTimer;
   FButtons.Free;
   inherited;
+end;
+
+{ ========================================================================== }
+{ TSuperMessageForm — Auto-dismiss timer                                      }
+{ ========================================================================== }
+
+procedure TSuperMessageForm.StartDismissTimer;
+begin
+  FDismissSecondsLeft := FConfig.AutoDismissSeconds;
+  UpdateDismissCaption;   // show initial count immediately
+
+  FDismissTimer          := TTimer.Create(Self);
+  FDismissTimer.Interval := 1000;
+  FDismissTimer.OnTimer  := DismissTimerTick;
+  FDismissTimer.Enabled  := True;
+end;
+
+procedure TSuperMessageForm.StopDismissTimer;
+begin
+  if Assigned(FDismissTimer) then
+  begin
+    FDismissTimer.Enabled := False;
+    FreeAndNil(FDismissTimer);
+  end;
+end;
+
+procedure TSuperMessageForm.UpdateDismissCaption;
+var
+  Suffix: string;
+begin
+  if FDismissSecondsLeft = 1 then
+    Suffix := ' - dismissing in 1 second...'
+  else
+    Suffix := Format(' - dismissing in %d seconds...', [FDismissSecondsLeft]);
+  Caption := FOriginalTitle + Suffix;
+  { FHeaderLabel.Text is deliberately not updated here — the header bar has
+    constrained width and the countdown text would wrap.  The OS title bar
+    (Caption) is sufficient to communicate the countdown to the user. }
+end;
+
+procedure TSuperMessageForm.DismissTimerTick(Sender: TObject);
+begin
+  Dec(FDismissSecondsLeft);
+  if FDismissSecondsLeft > 0 then
+  begin
+    UpdateDismissCaption;
+    Exit;
+  end;
+
+  { Disable the timer without freeing it — we are currently inside this
+    timer's OnTimer callback, so freeing it here would corrupt the call
+    stack.  The destructor will free it safely after we return. }
+  FDismissTimer.Enabled := False;
+
+  if FDefaultButton in FButtonSet then
+    FResult := BUTTON_RESULTS[FDefaultButton]
+  else
+    FResult := smrNone;
+
+  if Assigned(FCallback) then
+    FCallback(FResult);
+
+  if FIsModal then
+    ModalResult := mrOk
+  else
+    { Defer Close so this event handler fully unwinds before the form is
+      released.  TThread.Queue runs on the main thread after we return. }
+    TThread.Queue(nil, procedure begin Close; end);
 end;
 
 { ========================================================================== }
@@ -384,6 +516,21 @@ begin
   FHeaderPanel.XRadius := 0;
   FHeaderPanel.YRadius := 0;
 
+  { × close button — added to header BEFORE the Client-aligned label so that
+    Right alignment is resolved first and the label fills the remaining space }
+  FCloseLabel := TLabel.Create(Self);
+  FCloseLabel.Parent   := FHeaderPanel;
+  FCloseLabel.Align    := TAlignLayout.Right;
+  FCloseLabel.Width    := HEADER_HEIGHT;   // square hit area
+  FCloseLabel.Text     := #$00D7;          // × (multiplication sign)
+  FCloseLabel.HitTest  := True;
+  FCloseLabel.Cursor   := crHandPoint;
+  FCloseLabel.TextSettings.FontColor := TAlphaColorRec.White;
+  FCloseLabel.TextSettings.Font.Size := 16;
+  FCloseLabel.TextSettings.HorzAlign := TTextAlign.Center;
+  FCloseLabel.TextSettings.VertAlign := TTextAlign.Center;
+  FCloseLabel.OnClick  := CloseButtonClick;
+
   FHeaderLabel := TLabel.Create(Self);
   FHeaderLabel.Parent    := FHeaderPanel;
   FHeaderLabel.Align     := TAlignLayout.Client;
@@ -393,6 +540,7 @@ begin
   FHeaderLabel.TextSettings.FontColor := TAlphaColorRec.White;
   FHeaderLabel.TextSettings.Font.Size := TITLE_FONT_SIZE;
   FHeaderLabel.TextSettings.Font.Style := [TFontStyle.fsBold];
+  FHeaderLabel.TextSettings.HorzAlign := TTextAlign.Leading;
   FHeaderLabel.TextSettings.VertAlign := TTextAlign.Center;
   if Assigned(FConfig.Font) then
     FHeaderLabel.TextSettings.Font.Family := FConfig.Font.Family;
@@ -611,21 +759,42 @@ begin
   Btn := Sender as TButton;
   B   := TSuperMessageButton(Btn.Tag);
 
+  { Cancel any pending auto-dismiss and restore the original OS title }
+  StopDismissTimer;
+  Caption := FOriginalTitle;
+
   if B = smbMore then
   begin
     { More button: invoke the callback but don't close the dialog }
-    if Assigned(FConfig.OnMore) then
-      FConfig.OnMore();
+    if Assigned(FOnMore) then
+      FOnMore();
     Exit;
   end;
 
   FResult := BUTTON_RESULTS[B];
 
-  if Assigned(FConfig.Callback) then
-    FConfig.Callback(FResult);
+  if Assigned(FCallback) then
+    FCallback(FResult);
 
-  if FConfig.Modal then
+  if FIsModal then
     ModalResult := mrOk    // signals ShowModal to return
+  else
+    Close;
+end;
+
+procedure TSuperMessageForm.CloseButtonClick(Sender: TObject);
+begin
+  StopDismissTimer;
+  Caption := FOriginalTitle;
+  { Pick the most appropriate cancel-like result for the configured buttons }
+  if smbCancel in FButtonSet then FResult := smrCancel
+  else if smbNo     in FButtonSet then FResult := smrNo
+  else if smbClose  in FButtonSet then FResult := smrClose
+  else                                 FResult := smrNone;
+  if Assigned(FCallback) then
+    FCallback(FResult);
+  if FIsModal then
+    ModalResult := mrOk
   else
     Close;
 end;
@@ -633,10 +802,34 @@ end;
 procedure TSuperMessageForm.FormClose(Sender: TObject;
   var Action: TCloseAction);
 begin
-  if not FConfig.Modal then
+  if not FIsModal then
     Action := TCloseAction.caFree;
   { Modal: leave Action at its default (caHide); ShowConfig frees the form
     explicitly after ShowModal returns. }
+end;
+
+{ ========================================================================== }
+{ TSuperMessageForm — WriteLog                                                }
+{ ========================================================================== }
+
+class procedure TSuperMessageForm.WriteLog(const ALogFile, ATitle,
+  AMessage: string; AMsgType: TSuperMessageType);
+const
+  TYPE_TAG: array[TSuperMessageType] of string = (
+    'INFO', 'SUCCESS', 'WARNING', 'ERROR', 'FATAL', 'QUESTION', 'CUSTOM');
+var
+  Stamp, Body, Entry: string;
+begin
+  try
+    Stamp := FormatDateTime('yyyy-mm-dd hh:nn:ss', Now);
+    { Flatten any embedded line-breaks so each dialog = one log line }
+    Body  := AMessage.Replace(#13#10, ' ').Replace(#13, ' ').Replace(#10, ' ');
+    Entry := Stamp + '  [' + TYPE_TAG[AMsgType] + ']  ' +
+             ATitle + ': ' + Body + sLineBreak;
+    TFile.AppendAllText(ALogFile, Entry, TEncoding.UTF8);
+  except
+    { Never let a logging failure affect the dialog }
+  end;
 end;
 
 { ========================================================================== }

@@ -23,6 +23,8 @@ type
     procedure OnShowQuestion(Sender: TObject);
     procedure OnShowNonModal(Sender: TObject);
     procedure OnShowMore(Sender: TObject);
+    procedure OnShowAutoDismiss(Sender: TObject);
+    procedure OnShowAutoDismissNonModal(Sender: TObject);
   public
     { Public declarations }
   end;
@@ -40,7 +42,7 @@ var
 begin
   Caption := 'SuperMessage Demo';
   Width   := 380;
-  Height  := 540;
+  Height  := 640;
 
   Title := TLabel.Create(Self);
   Title.Parent := Self;
@@ -68,6 +70,8 @@ begin
   AddDemoButton('Show Question (Yes / No / Cancel)', OnShowQuestion);
   AddDemoButton('Show Non-Modal (with callback)', OnShowNonModal);
   AddDemoButton('Show with More... / Help button',OnShowMore);
+  AddDemoButton('Auto-dismiss (modal, 5 s)',       OnShowAutoDismiss);
+  AddDemoButton('Auto-dismiss (non-modal, 8 s)',   OnShowAutoDismissNonModal);
 end;
 
 procedure TForm11.AddDemoButton(const ACaption: string; AOnClick: TNotifyEvent);
@@ -185,6 +189,63 @@ begin
                          ShowMessage('Help action fired.' + sLineBreak +
                            '(In production this would open a browser or help form.)');
                        end;
+    TSuperMessage.ShowConfig(Cfg);
+  finally
+    Cfg.Free;
+  end;
+end;
+
+procedure TForm11.OnShowAutoDismiss(Sender: TObject);
+{ Modal info dialog — closes itself after 5 seconds if the user does nothing.
+  The default result (smrOK) is returned just as if OK had been clicked. }
+var
+  Cfg: TSuperMessageConfig;
+  Res: TSuperMessageResult;
+begin
+  Cfg := TSuperMessageConfig.Create;
+  try
+    Cfg.Title              := 'Session Reminder';
+    Cfg.Message            := 'Your session will expire in 30 minutes.' + sLineBreak +
+                              'Click OK to acknowledge, or simply wait — this ' +
+                              'dialog will close automatically.';
+    Cfg.MsgType            := smtInfo;
+    Cfg.Buttons            := [smbOK];
+    Cfg.AutoDismissSeconds := 5;
+    Cfg.DefaultButton      := smbOK;
+    Res := TSuperMessage.ShowConfig(Cfg);
+  finally
+    Cfg.Free;
+  end;
+
+  if Res = smrOK then
+    ShowMessage('Acknowledged (OK clicked or auto-dismissed).')
+  else
+    ShowMessage('Dismissed — result: smrNone');
+end;
+
+procedure TForm11.OnShowAutoDismissNonModal(Sender: TObject);
+{ Non-modal success toast — floats on screen and vanishes after 8 seconds.
+  The callback fires whether the user clicks OK or the timer expires. }
+var
+  Cfg: TSuperMessageConfig;
+begin
+  Cfg := TSuperMessageConfig.Create;
+  try
+    Cfg.Title              := 'Backup Complete';
+    Cfg.Message            := '3,842 files backed up to cloud storage.' + sLineBreak +
+                              'This notification will close automatically.';
+    Cfg.MsgType            := smtSuccess;
+    Cfg.Buttons            := [smbOK];
+    Cfg.Modal              := False;
+    Cfg.AutoDismissSeconds := 8;
+    Cfg.DefaultButton      := smbOK;
+    Cfg.Callback           := procedure(R: TSuperMessageResult)
+                              begin
+                                if R = smrOK then
+                                  ShowMessage('Backup acknowledged.')
+                                else
+                                  ShowMessage('Backup notification auto-dismissed.');
+                              end;
     TSuperMessage.ShowConfig(Cfg);
   finally
     Cfg.Free;

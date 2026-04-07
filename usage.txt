@@ -1,0 +1,361 @@
+==============================================================================
+  SuperMessage — Usage Reference
+==============================================================================
+
+SuperMessage is a single-unit FMX dialog component that replaces ShowMessage
+with a richer, cross-platform dialog. Features include:
+
+  * Colour-coded header bar with a procedurally drawn icon (no image files)
+  * Multiple configurable buttons with conventional ordering
+  * Modal and non-modal (non-blocking) display modes
+  * Optional result callback (modal or non-modal)
+  * "More..." button for help links or custom actions
+  * Auto-dismiss countdown with a configurable default result
+  * Optional log file — every dialog shown is appended to a UTF-8 text file
+
+Add SuperMessage.pas to your project and include 'SuperMessage' in the uses
+clause.  No design-time package or component registration is required.
+
+
+------------------------------------------------------------------------------
+  ENTRY POINTS
+------------------------------------------------------------------------------
+
+TSuperMessage.Show(...)           — Simple modal dialog (most common use)
+TSuperMessage.ShowNonModal(...)   — Non-modal with an inline callback
+TSuperMessage.ShowConfig(Config)  — Full control via TSuperMessageConfig
+
+Signatures:
+
+  class function Show(
+    const ATitle, AMessage : string;
+    AMsgType               : TSuperMessageType;
+    AButtons               : TSuperMessageButtons = [smbOK];
+    const ALogFile         : string = '')        : TSuperMessageResult;
+
+  class procedure ShowNonModal(
+    const ATitle, AMessage : string;
+    AMsgType               : TSuperMessageType;
+    AButtons               : TSuperMessageButtons;
+    ACallback              : TSuperMessageCallback = nil;
+    const ALogFile         : string = '');
+
+  class function ShowConfig(AConfig: TSuperMessageConfig): TSuperMessageResult;
+
+
+------------------------------------------------------------------------------
+  MESSAGE TYPES  (TSuperMessageType)
+------------------------------------------------------------------------------
+
+  smtInfo       Blue header     General information
+  smtSuccess    Green header    Operation completed successfully
+  smtWarning    Amber header    Issue or potential problem
+  smtError      Red header      Recoverable error
+  smtFatal      Purple header   Fatal / unrecoverable error
+  smtQuestion   Teal header     Question requiring a user decision
+  smtCustom     Grey header     No built-in icon; supply CustomBitmap
+
+
+------------------------------------------------------------------------------
+  BUTTONS  (TSuperMessageButton / TSuperMessageButtons)
+------------------------------------------------------------------------------
+
+  smbOK         'OK'
+  smbCancel     'Cancel'
+  smbYes        'Yes'
+  smbNo         'No'
+  smbRetry      'Retry'
+  smbAbort      'Abort'
+  smbIgnore     'Ignore'
+  smbClose      'Close'
+  smbMore       Caption set by Config.MoreCaption (default 'More...')
+
+Pass any combination as a set: Buttons := [smbYes, smbNo, smbCancel];
+
+Display order follows Windows convention: affirmative buttons on the left
+(Yes, OK), Cancel/Close on the right.
+
+
+------------------------------------------------------------------------------
+  RESULTS  (TSuperMessageResult)
+------------------------------------------------------------------------------
+
+  smrNone       No button clicked (auto-dismiss default when DefaultButton
+                is not in the Buttons set, or not yet closed)
+  smrOK
+  smrCancel
+  smrYes
+  smrNo
+  smrRetry
+  smrAbort
+  smrIgnore
+  smrClose
+  smrMore       Only returned if the More button closes the dialog
+
+
+------------------------------------------------------------------------------
+  TSuperMessageConfig — ALL PARAMETERS
+------------------------------------------------------------------------------
+
+  Title              : string
+      Text shown in the coloured header bar and the OS title bar.
+
+  Message            : string
+      Main body text. Supports multi-line with sLineBreak.
+
+  MsgType            : TSuperMessageType
+      Determines the header colour and the default icon drawn in the body.
+
+  Buttons            : TSuperMessageButtons
+      Set of buttons to display, e.g. [smbYes, smbNo].
+
+  Modal              : Boolean  (default True)
+      True  — ShowModal; ShowConfig blocks until the user responds.
+      False — Show; form displays non-blocking; result via Callback.
+
+  Callback           : TSuperMessageCallback  (default nil)
+      procedure(AResult: TSuperMessageResult) called on close in both
+      modal and non-modal modes. Optional in modal mode.
+
+  AutoDismissSeconds : Integer  (default 0)
+      When > 0 the dialog closes automatically after this many seconds
+      if the user does not interact with it. A countdown is shown in
+      both the coloured header and the OS title bar:
+          "My Title - dismissing in 5 seconds..."
+      Intended for informational dialogs; not appropriate for dialogs
+      that require a deliberate user choice.
+
+  DefaultButton      : TSuperMessageButton  (default smbOK)
+      The result returned when the auto-dismiss timer expires. Must be
+      one of the buttons in the Buttons set; otherwise smrNone is
+      returned. Ignored when AutoDismissSeconds = 0.
+
+  CustomBitmap       : TBitmap  (default nil)
+      Supplies a custom icon for smtCustom dialogs. Not freed by
+      SuperMessage — the caller owns the bitmap.
+
+  MoreCaption        : string  (default 'More...')
+      Caption of the smbMore button.
+
+  OnMore             : TProc  (default nil)
+      Called when the More button is clicked. The dialog stays open
+      unless OnMore explicitly closes it.
+
+  MaxWidth           : Single  (default 0 → 560)
+      Maximum dialog width in pixels. 0 uses the built-in default.
+
+  MinWidth           : Single  (default 0 → 320)
+      Minimum dialog width in pixels. 0 uses the built-in default.
+
+  Font               : TFont  (default nil)
+      Overrides the font family for the header and body text.
+      Not freed by SuperMessage — the caller owns the font object.
+
+  StyleBook          : TStyleBook  (default nil)
+      Applies a specific FMX style to the dialog's buttons and
+      background. nil inherits the Application's StyleBook.
+
+  LogFile            : string  (default '')
+      Path to a UTF-8 text log file.  When non-empty, SuperMessage appends
+      a timestamped line to the file each time the dialog is shown.  The
+      file is created automatically if it does not exist.
+      Empty string disables logging (default).
+
+      Log line format:
+          YYYY-MM-DD HH:MM:SS  [TYPE]  Title: Message text
+
+      Embedded line-breaks in the message are flattened to a single space
+      so each dialog event occupies exactly one line.
+      Logging errors (bad path, locked file, etc.) are silently ignored
+      so a logging failure never affects the dialog itself.
+
+
+------------------------------------------------------------------------------
+  EXAMPLES
+------------------------------------------------------------------------------
+
+--- 1. Simplest possible call (modal, OK only) ---
+
+  TSuperMessage.Show(
+    'Save Complete',
+    'Your document has been saved.',
+    smtSuccess);
+
+
+--- 2. Modal with button choice ---
+
+  var Res: TSuperMessageResult;
+  Res := TSuperMessage.Show(
+    'Delete File?',
+    'This action cannot be undone.',
+    smtQuestion, [smbYes, smbNo]);
+
+  if Res = smrYes then
+    DeleteFile(FileName);
+
+
+--- 3. Modal error with Retry / Cancel ---
+
+  var Res: TSuperMessageResult;
+  Res := TSuperMessage.Show(
+    'Connection Failed',
+    'Could not reach the server.  Check your network and try again.',
+    smtError, [smbRetry, smbCancel]);
+
+  if Res = smrRetry then
+    AttemptReconnect;
+
+
+--- 4. Non-modal with callback ---
+
+  TSuperMessage.ShowNonModal(
+    'Sync Running',
+    'Synchronisation is running in the background.',
+    smtInfo, [smbOK, smbCancel],
+    procedure(R: TSuperMessageResult)
+    begin
+      if R = smrCancel then
+        CancelSync;
+    end);
+
+
+--- 5. Auto-dismiss — modal (informational, no required action) ---
+
+  var Cfg: TSuperMessageConfig;
+  Cfg := TSuperMessageConfig.Create;
+  try
+    Cfg.Title              := 'Session Reminder';
+    Cfg.Message            := 'Your session will expire in 30 minutes.';
+    Cfg.MsgType            := smtInfo;
+    Cfg.Buttons            := [smbOK];
+    Cfg.AutoDismissSeconds := 10;    // closes after 10 s if ignored
+    Cfg.DefaultButton      := smbOK; // result returned on auto-close
+    TSuperMessage.ShowConfig(Cfg);
+  finally
+    Cfg.Free;
+  end;
+
+
+--- 6. Auto-dismiss — non-modal "toast" notification ---
+
+  var Cfg: TSuperMessageConfig;
+  Cfg := TSuperMessageConfig.Create;
+  try
+    Cfg.Title              := 'Backup Complete';
+    Cfg.Message            := '3,842 files backed up successfully.';
+    Cfg.MsgType            := smtSuccess;
+    Cfg.Buttons            := [smbOK];
+    Cfg.Modal              := False;
+    Cfg.AutoDismissSeconds := 8;
+    Cfg.DefaultButton      := smbOK;
+    Cfg.Callback           := procedure(R: TSuperMessageResult)
+                              begin
+                                // R = smrOK whether clicked or auto-dismissed
+                                // e.g. update UI, write to log, etc.
+                              end;
+    TSuperMessage.ShowConfig(Cfg);
+  finally
+    Cfg.Free;
+  end;
+
+
+--- 7. "More..." / Help button ---
+
+  var Cfg: TSuperMessageConfig;
+  Cfg := TSuperMessageConfig.Create;
+  try
+    Cfg.Title       := 'Connection Error';
+    Cfg.Message     := 'Unable to connect.  See Help for troubleshooting.';
+    Cfg.MsgType     := smtError;
+    Cfg.Buttons     := [smbRetry, smbCancel, smbMore];
+    Cfg.MoreCaption := 'Help';
+    Cfg.OnMore      := procedure
+                       begin
+                         TTMSFNCUtils.OpenURL('https://help.example.com');
+                       end;
+    TSuperMessage.ShowConfig(Cfg);
+  finally
+    Cfg.Free;
+  end;
+
+
+--- 8. Log file — simple call ---
+
+  { The log file path is the last optional parameter of Show/ShowNonModal }
+  TSuperMessage.Show(
+    'File Not Found',
+    'The file "report.docx" could not be opened.',
+    smtError, [smbRetry, smbCancel],
+    'C:\Logs\myapp.log');
+
+  { Produces a line like:
+    2026-04-07 11:53:40  [ERROR]  File Not Found: The file "report.docx" could not be opened. }
+
+
+--- 9. Log file — via config (combine with any other options) ---
+
+  var Cfg: TSuperMessageConfig;
+  Cfg := TSuperMessageConfig.Create;
+  try
+    Cfg.Title   := 'Backup Failed';
+    Cfg.Message := 'Could not write to the backup drive.';
+    Cfg.MsgType := smtError;
+    Cfg.Buttons := [smbRetry, smbCancel];
+    Cfg.LogFile := TPath.Combine(TPath.GetDocumentsPath, 'myapp.log');
+    TSuperMessage.ShowConfig(Cfg);
+  finally
+    Cfg.Free;
+  end;
+
+
+--- 10. Custom icon ---
+
+  var Cfg: TSuperMessageConfig;
+      Bmp: TBitmap;
+  Bmp := TBitmap.Create;
+  try
+    Bmp.LoadFromFile('myicon.png');
+    Cfg := TSuperMessageConfig.Create;
+    try
+      Cfg.Title        := 'Custom Icon';
+      Cfg.Message      := 'This dialog uses a custom bitmap icon.';
+      Cfg.MsgType      := smtCustom;
+      Cfg.Buttons      := [smbOK];
+      Cfg.CustomBitmap := Bmp;
+      TSuperMessage.ShowConfig(Cfg);
+    finally
+      Cfg.Free;
+    end;
+  finally
+    Bmp.Free;
+  end;
+
+
+------------------------------------------------------------------------------
+  NOTES
+------------------------------------------------------------------------------
+
+* Non-modal forms free themselves via OnClose (caFree) — do not free them
+  manually after calling ShowConfig with Modal = False.
+
+* Callback is always invoked on the main thread; no synchronisation needed.
+
+* When AutoDismissSeconds > 0, clicking any button before the timer expires
+  cancels the countdown and returns the clicked button's normal result.
+
+* Do not use smtQuestion with AutoDismissSeconds — auto-dismissing a dialog
+  that requires a deliberate choice (Yes/No) can produce unintended actions.
+
+* The More button (smbMore) does not close the dialog and does not trigger
+  the Callback.  It invokes OnMore and leaves the dialog open.
+
+* Logging writes when the dialog is shown, not when it is dismissed.  This
+  captures the event even if the application crashes before the user responds.
+
+* Use TPath.Combine(TPath.GetDocumentsPath, 'app.log') (System.IOUtils) for
+  a cross-platform log path rather than a hard-coded Windows path.
+
+* A single log file can be shared across all dialogs in an application —
+  each call appends, so the file accumulates a full session history.
+
+==============================================================================
