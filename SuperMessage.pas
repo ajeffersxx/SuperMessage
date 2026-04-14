@@ -177,6 +177,12 @@ type
     FDefaultButton : TSuperMessageButton;
     FOnMore        : TProc;
 
+    { Mobile overlay — on iOS/Android the form is full-screen transparent;
+      FDimOverlay darkens the background and FCardLayout holds the dialog. }
+    FIsMobile      : Boolean;
+    FDimOverlay    : TRectangle;
+    FCardLayout    : TLayout;
+
     { Auto-dismiss }
     FDismissTimer      : TTimer;
     FDismissSecondsLeft: Integer;
@@ -383,6 +389,15 @@ begin
   FDefaultButton := AConfig.DefaultButton;
   FOnMore        := AConfig.OnMore;
 
+  { Detect mobile platforms where forms are always full-screen }
+{$IF DEFINED(IOS) OR DEFINED(ANDROID)}
+  FIsMobile := True;
+{$ELSE}
+  FIsMobile := False;
+{$ENDIF}
+  FDimOverlay := nil;
+  FCardLayout := nil;
+
   { Log this dialog event before anything else }
   if AConfig.LogFile <> '' then
     WriteLog(AConfig.LogFile, AConfig.Title, AConfig.Message, AConfig.MsgType);
@@ -390,11 +405,22 @@ begin
   { Borderless so Form.Height = content height exactly.
     BorderStyle.Single includes the OS title bar in Form.Height, giving a
     client area shorter than intended.  We supply our own header. }
-  BorderStyle    := TFmxFormBorderStyle.None;
-  Caption        := AConfig.Title;
-  Position       := TFormPosition.ScreenCenter;
-  FormStyle      := TFormStyle.Normal;
-  Transparency   := False;
+  BorderStyle := TFmxFormBorderStyle.None;
+  Caption     := AConfig.Title;
+  FormStyle   := TFormStyle.Normal;
+
+  if FIsMobile then
+  begin
+    { On iOS/Android the OS forces forms to fill the screen.  We embrace
+      this by making the form transparent, darkening it with an overlay,
+      and positioning the dialog card manually at screen centre. }
+    Transparency := True;
+  end
+  else
+  begin
+    Position     := TFormPosition.ScreenCenter;
+    Transparency := False;
+  end;
 
   { Inherit the caller's StyleBook so buttons/background match the app theme.
     If nil, FMX falls back to the Application's StyleBook automatically. }
@@ -501,10 +527,41 @@ begin
   MaxW := IfThen(FConfig.MaxWidth > 0, FConfig.MaxWidth, DEFAULT_MAX_W);
   MinW := IfThen(FConfig.MinWidth > 0, FConfig.MinWidth, DEFAULT_MIN_W);
 
-  { --- Root layout fills the form --- }
-  FRootLayout := TLayout.Create(Self);
-  FRootLayout.Parent := Self;
-  FRootLayout.Align  := TAlignLayout.Client;
+  if FIsMobile then
+  begin
+    { Semi-transparent backdrop covers the entire screen }
+    FDimOverlay := TRectangle.Create(Self);
+    FDimOverlay.Parent      := Self;
+    FDimOverlay.Align       := TAlignLayout.Client;
+    FDimOverlay.HitTest     := True;
+    FDimOverlay.Fill.Color  := $AA000000;   // ~67 % opaque black
+    FDimOverlay.Stroke.Kind := TBrushKind.None;
+
+    { Floating card — size and position are set in ApplySizeConstraints }
+    FCardLayout := TLayout.Create(Self);
+    FCardLayout.Parent  := Self;
+    FCardLayout.Align   := TAlignLayout.None;
+    FCardLayout.HitTest := True;
+
+    { White card background }
+    var CardBg := TRectangle.Create(Self);
+    CardBg.Parent      := FCardLayout;
+    CardBg.Align       := TAlignLayout.Client;
+    CardBg.Fill.Color  := TAlphaColorRec.White;
+    CardBg.Stroke.Kind := TBrushKind.None;
+
+    { Root layout sits on top of the white background inside the card }
+    FRootLayout := TLayout.Create(Self);
+    FRootLayout.Parent := FCardLayout;
+    FRootLayout.Align  := TAlignLayout.Client;
+  end
+  else
+  begin
+    { --- Root layout fills the form (desktop behaviour) --- }
+    FRootLayout := TLayout.Create(Self);
+    FRootLayout.Parent := Self;
+    FRootLayout.Align  := TAlignLayout.Client;
+  end;
 
   { --- Header panel with colour accent --- }
   FHeaderPanel := TRectangle.Create(Self);
@@ -730,9 +787,21 @@ begin
 
   TotalH := HEADER_HEIGHT + 1 {line} + BodyH + BTN_BAR_HEIGHT;
 
-  { Apply to form }
-  Width  := Round(FinalW);
-  Height := Round(TotalH);
+  if FIsMobile then
+  begin
+    { Size the floating card and centre it on the screen.
+      The form itself remains full-screen (set by iOS/Android). }
+    FCardLayout.Width    := Round(FinalW);
+    FCardLayout.Height   := Round(TotalH);
+    FCardLayout.Position.X := Round((Screen.Width  - FinalW) / 2);
+    FCardLayout.Position.Y := Round((Screen.Height - TotalH) / 2);
+  end
+  else
+  begin
+    { Apply to form }
+    Width  := Round(FinalW);
+    Height := Round(TotalH);
+  end;
 
   { Position buttons right-to-left.  We use BODY_PADDING * 2 as the right
     margin because Windows 11's drop-shadow / resize frame consumes ~8-10px
