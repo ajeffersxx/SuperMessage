@@ -733,9 +733,28 @@ var
   TotalBtnW    : Single;
   I            : Integer;
   TempBmp      : TBitmap;
-  TextRect     : TRectF;
   FinalW       : Single;
   BtnRight     : Single;
+  MaxTotalH    : Single;
+
+  function MeasureTextHeight(ADialogWidth: Single): Single;
+  var
+    R: TRectF;
+  begin
+    Result := MSG_FONT_SIZE * 2.4;  // fallback if canvas unavailable
+    if TempBmp.Canvas.BeginScene then
+    try
+      TempBmp.Canvas.Font.Size   := MSG_FONT_SIZE;
+      TempBmp.Canvas.Font.Family := FMessageLabel.TextSettings.Font.Family;
+      R := RectF(0, 0, ADialogWidth - ICON_AREA_WIDTH - BODY_PADDING * 3, 10000);
+      TempBmp.Canvas.MeasureText(R, FConfig.Message, True,
+        [], TTextAlign.Leading, TTextAlign.Leading);
+      Result := R.Height;
+    finally
+      TempBmp.Canvas.EndScene;
+    end;
+  end;
+
 begin
   MaxW := IfThen(FConfig.MaxWidth > 0, FConfig.MaxWidth, DEFAULT_MAX_W);
   MinW := IfThen(FConfig.MinWidth > 0, FConfig.MinWidth, DEFAULT_MIN_W);
@@ -745,46 +764,32 @@ begin
   for I := 0 to FButtons.Count - 1 do
     TotalBtnW := TotalBtnW + FButtons[I].Width + BTN_SPACING;
 
-  { Desired inner text width (subtract icon area and padding) }
-  FinalW := Max(MinW, TotalBtnW);
-  FinalW := Min(FinalW, MaxW);
+  FinalW := EnsureRange(Max(MinW, TotalBtnW), MinW, MaxW);
 
-  { Estimate the text height at the chosen width using a scratch bitmap }
-  TextH := MSG_FONT_SIZE * 2.4;  // safe default
+  { Measure text height at the initial width, then prefer widening over
+    growing tall: if text exceeds ~4 lines and we have room to expand,
+    jump straight to MaxW and re-measure at the wider layout. }
   TempBmp := TBitmap.Create(1, 1);
   try
-    if TempBmp.Canvas.BeginScene then
-    try
-      TempBmp.Canvas.Font.Size   := MSG_FONT_SIZE;
-      TempBmp.Canvas.Font.Family := FMessageLabel.TextSettings.Font.Family;
-
-      TextRect := RectF(0, 0,
-        FinalW - ICON_AREA_WIDTH - BODY_PADDING * 3,
-        10000);
-
-      TempBmp.Canvas.MeasureText(TextRect,
-        FConfig.Message, True,
-        [], TTextAlign.Leading, TTextAlign.Leading);
-
-      TextH := TextRect.Height;
-    finally
-      TempBmp.Canvas.EndScene;
+    TextH := MeasureTextHeight(FinalW);
+    if (TextH > MSG_FONT_SIZE * 4) and (FinalW < MaxW) then
+    begin
+      FinalW := MaxW;
+      TextH  := MeasureTextHeight(FinalW);
     end;
   finally
     TempBmp.Free;
   end;
 
-  { Clamp text height: at least 3 lines, at most ~12 lines }
+  { Enforce minimum of ~3 lines }
   TextH := Max(TextH, MSG_FONT_SIZE * 3.5);
-  TextH := Min(TextH, MSG_FONT_SIZE * 14);
 
-  { Body height = max(icon, text) + top padding }
-  BodyH := Max(TextH, ICON_SIZE) + BODY_PADDING * 2;
+  { Cap total dialog height at 85 % of the screen so it always fits on screen }
+  MaxTotalH := Screen.Height * 0.85;
+  TextH := Min(TextH,
+    MaxTotalH - HEADER_HEIGHT - 1 - BTN_BAR_HEIGHT - BODY_PADDING * 2);
 
-  { Check if we need a wider form to fit text on fewer lines }
-  if TextH > MSG_FONT_SIZE * 6 then
-    FinalW := MaxW;
-
+  BodyH  := Max(TextH, ICON_SIZE) + BODY_PADDING * 2;
   TotalH := HEADER_HEIGHT + 1 {line} + BodyH + BTN_BAR_HEIGHT;
 
   if FIsMobile then
